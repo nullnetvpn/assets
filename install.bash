@@ -149,7 +149,8 @@ http {
         listen 443 ssl http2;
         server_name $DOMAIN;
 
-        acme_certificate letsencrypt;
+        ssl_certificate $acme_cert_letsencrypt;
+        ssl_certificate_key $acme_cert_key_letsencrypt;
 
         location / {
             proxy_pass http://127.0.0.1:7443;
