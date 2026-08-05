@@ -126,7 +126,7 @@ EOF
 
 
 
-cat > angie.conf <<'EOF'
+cat > angie.conf <<EOF
 
 worker_processes auto;
 
@@ -144,21 +144,29 @@ http {
     server {
         listen 80;
         server_name $DOMAIN;
+
         acme letsencrypt;
     }
 
     server {
         listen 443 ssl http2;
-        server_name {$DOMAIN};
+        server_name $DOMAIN;
+
         acme_certificate letsencrypt;
+
         location / {
             proxy_pass http://127.0.0.1:7443;
+
             proxy_http_version 1.1;
-            proxy_set_header Host $host;
-            proxy_set_header X-Real-IP $remote_addr;
+
+            proxy_set_header Host \$host;
+            proxy_set_header X-Real-IP \$remote_addr;
+
             proxy_intercept_errors on;
         }
+
         error_page 400 401 403 404 405 500 502 503 504 = @fake;
+
         location @fake {
             default_type text/html;
             return 403 "Forbidden";
