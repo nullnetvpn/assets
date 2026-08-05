@@ -108,29 +108,17 @@ mkdir -p acme
 
 cat > docker-compose.yml <<'EOF'
 services:
-
   angie:
-
     image: docker.angie.software/angie:latest
-
     container_name: null-angie
-
     restart: unless-stopped
-
-
     ports:
       - "80:80"
       - "443:443"
-
-
     env_file:
       - .env
-
-
     volumes:
-
       - ./angie.conf:/etc/angie/angie.conf:ro
-
       - ./acme:/var/lib/angie/acme
 
 
@@ -142,93 +130,40 @@ cat > angie.conf <<'EOF'
 
 worker_processes auto;
 
-
 events {
     worker_connections 1024;
 }
 
-
-
 http {
 
-
     acme_client letsencrypt {
-
         directory https://acme-v02.api.letsencrypt.org/directory;
-
-        email admin@{$DOMAIN};
-
+        email admin@$DOMAIN;
     }
 
-
-
     server {
-
-
         listen 80;
-
-        server_name {$DOMAIN};
-
-
+        server_name $DOMAIN;
         acme letsencrypt;
-
     }
-
-
-
-
 
     server {
-
-
         listen 443 ssl http2;
-
         server_name {$DOMAIN};
-
-
-
         acme_certificate letsencrypt;
-
-
-
         location / {
-
-
             proxy_pass http://127.0.0.1:7443;
-
-
             proxy_http_version 1.1;
-
-
             proxy_set_header Host $host;
-
             proxy_set_header X-Real-IP $remote_addr;
-
-
             proxy_intercept_errors on;
-
-
         }
-
-
-
         error_page 400 401 403 404 405 500 502 503 504 = @fake;
-
-
-
         location @fake {
-
-
             default_type text/html;
-
-
             return 403 "Forbidden";
-
         }
-
-
     }
-
 }
 
 EOF
