@@ -2,163 +2,197 @@
 
 set -euo pipefail
 
+WORKDIR="/opt/null-tls"
+
 GREEN="\e[32m"
 RED="\e[31m"
-YELLOW="\e[33m"
 BLUE="\e[34m"
 RESET="\e[0m"
-
-WORKDIR="/opt/null-tls"
 
 info() {
     echo -e "${BLUE}[*]${RESET} $1"
 }
 
-success() {
+ok() {
     echo -e "${GREEN}[+]${RESET} $1"
 }
 
-warn() {
-    echo -e "${YELLOW}[!]${RESET} $1"
-}
-
-error() {
+err() {
     echo -e "${RED}[-]${RESET} $1"
 }
 
+
 if [[ $EUID -ne 0 ]]; then
-    error "Запустите скрипт от root."
+    err "Запустите от root"
     exit 1
 fi
+
 
 mkdir -p "$WORKDIR"
 cd "$WORKDIR"
 
-success "Рабочая директория: $WORKDIR"
+ok "Рабочая директория: $WORKDIR"
 
-info "Проверка Docker..."
+
+
+# Docker
 
 if ! command -v docker >/dev/null 2>&1; then
 
-    warn "Docker не найден. Устанавливаю..."
+    info "Устанавливаем Docker"
 
     apt update
+
     apt install -y \
         ca-certificates \
         curl \
         gnupg \
         lsb-release
 
+
     install -m 0755 -d /etc/apt/keyrings
 
-    curl -fsSL https://download.docker.com/linux/$(. /etc/os-release && echo "$ID")/gpg \
-        | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
 
-    chmod a+r /etc/apt/keyrings/docker.gpg
+    curl -fsSL https://download.docker.com/linux/debian/gpg \
+        | gpg --dearmor \
+        -o /etc/apt/keyrings/docker.gpg
+
 
     echo \
-"deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/$(. /etc/os-release && echo "$ID") $(lsb_release -cs) stable" \
+"deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] \
+https://download.docker.com/linux/debian \
+$(lsb_release -cs) stable" \
 > /etc/apt/sources.list.d/docker.list
 
+
     apt update
+
 
     apt install -y \
         docker-ce \
         docker-ce-cli \
         containerd.io \
-        docker-buildx-plugin \
         docker-compose-plugin
+
 
     systemctl enable docker
     systemctl start docker
 
-    success "Docker установлен."
-
 else
-    success "Docker уже установлен."
+
+    ok "Docker найден"
+
 fi
 
-echo
-read -rp "Введите домен: " DOMAIN < /dev/tty
+
+
+read -rp "Домен: " DOMAIN </dev/tty
+
 
 if [[ -z "$DOMAIN" ]]; then
-    error "Домен не указан."
+    err "Домен пустой"
     exit 1
 fi
+
+
 
 cat > .env <<EOF
 DOMAIN=$DOMAIN
 EOF
 
-success ".env создан."
+
+
+mkdir -p acme
+
+
 
 cat > docker-compose.yml <<'EOF'
 services:
-  caddy:
-    image: caddy:2
-    container_name: caddy
+  angie:
+    image: docker.angie.software/angie:latest
+    container_name: null-angie
     restart: unless-stopped
-
     ports:
       - "80:80"
       - "443:443"
-
     env_file:
       - .env
-
     volumes:
-      - ./Caddyfile:/etc/caddy/Caddyfile:ro
-      - caddy_data:/data
-      - caddy_config:/config
+      - ./angie.conf:/etc/angie/angie.conf:ro
+      - ./acme:/var/lib/angie/acme
 
-volumes:
-  caddy_data:
-  caddy_config:
+
 EOF
 
-success "docker-compose.yml создан."
 
-cat > Caddyfile <<'EOF'
-{$DOMAIN} {
-    reverse_proxy https://127.0.0.1:7443 {
-        transport http {
-            tls
-            tls_insecure_skip_verify
+
+cat > angie.conf <<EOF
+
+worker_processes auto;
+
+events {
+    worker_connections 1024;
+}
+
+http {
+
+    acme_client letsencrypt {
+        directory https://acme-v02.api.letsencrypt.org/directory;
+        email admin@$DOMAIN;
+    }
+
+    server {
+        listen 80;
+        server_name $DOMAIN;
+
+        acme letsencrypt;
+    }
+
+    server {
+        listen 443 ssl http2;
+        server_name $DOMAIN;
+
+        acme_certificate letsencrypt;
+
+        location / {
+            proxy_pass http://127.0.0.1:7443;
+
+            proxy_http_version 1.1;
+
+            proxy_set_header Host \$host;
+            proxy_set_header X-Real-IP \$remote_addr;
+
+            proxy_intercept_errors on;
+        }
+
+        error_page 400 401 403 404 405 500 502 503 504 = @fake;
+
+        location @fake {
+            default_type text/html;
+            return 403 "Forbidden";
         }
     }
 }
+
 EOF
 
-success "Caddyfile создан."
 
-info "Проверка Xray..."
-
-if command -v ss >/dev/null 2>&1; then
-    if ss -ltn | grep -q "127.0.0.1:7443"; then
-        success "Xray слушает 127.0.0.1:7443"
-    else
-        warn "Xray не найден на 127.0.0.1:7443"
-        warn "Caddy всё равно будет запущен."
-    fi
-fi
-
-info "Запуск Caddy..."
 
 docker compose up -d
 
-echo
-success "Установка завершена!"
+
+ok "Angie запущен"
+
+
 
 echo
-echo "=================================="
-echo "Рабочая директория : $WORKDIR"
-echo "Домен              : https://$DOMAIN"
-echo "Xray               : 127.0.0.1:7443"
-echo "=================================="
-
+echo "============================"
+echo "Домен:"
+echo "https://$DOMAIN"
 echo
-echo "Полезные команды:"
-echo "cd $WORKDIR"
-echo "docker compose logs -f"
-echo "docker compose restart"
-echo "docker compose down"
+echo "Xray:"
+echo "http://127.0.0.1:7443"
+echo
+echo "Каталог:"
+echo "$WORKDIR"
+echo "============================"
