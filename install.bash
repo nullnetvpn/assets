@@ -136,10 +136,7 @@ events {
 
 http {
 
-    acme_client letsencrypt {
-        directory https://acme-v02.api.letsencrypt.org/directory;
-        email admin@$DOMAIN;
-    }
+    acme_client letsencrypt https://acme-v02.api.letsencrypt.org/directory;
 
     server {
         listen 80;
