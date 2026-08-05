@@ -79,7 +79,7 @@ else
 fi
 
 echo
-read -rp "Введите домен: " DOMAIN
+read -rp "Введите домен: " DOMAIN < /dev/tty
 
 if [[ -z "$DOMAIN" ]]; then
     error "Домен не указан."
