@@ -1,6 +1,4 @@
 #!/usr/bin/env bash
-info "Starting NULLNET Auto Installer Node v1.0.0"
-info "Please wait..."
 set -euo pipefail
 
 export DEBIAN_FRONTEND=noninteractive
@@ -54,6 +52,7 @@ ask_secret() {
     echo
 }
 
+
 ################################################################################
 # Root
 ################################################################################
@@ -95,10 +94,7 @@ systemctl enable docker
 systemctl start docker
 
 
-if ! command -v docker >/dev/null 2>&1; then
-    fail "Docker installation failed."
-fi
-
+command -v docker >/dev/null 2>&1 || fail "Docker installation failed."
 
 ok "Docker ready."
 
@@ -138,7 +134,7 @@ fi
 
 ask DOMAIN "Enter domain: "
 
-[[ -n "$DOMAIN" ]] || fail "Domain empty."
+[[ -n "$DOMAIN" ]] || fail "Domain is empty."
 
 
 ################################################################################
@@ -157,7 +153,7 @@ fi
 
 
 ################################################################################
-# Cloudflare
+# Cloudflare token
 ################################################################################
 
 if [[ -f "$CF_CONFIG" ]]; then
@@ -189,31 +185,56 @@ export CF_Token
 # SSL
 ################################################################################
 
-info "Getting certificate..."
+info "Checking SSL certificates..."
 
 
-acme.sh \
-    --issue \
-    -d "$DOMAIN" \
-    --dns dns_cf
+if [[ -f "$SSL_DIR/fullchain.pem" && -f "$SSL_DIR/privkey.pem" ]]; then
+
+    ok "Certificates already exist in $SSL_DIR"
 
 
+else
 
-info "Installing certificate..."
+    info "Certificates not found in $SSL_DIR"
 
 
-acme.sh \
-    --install-cert \
-    -d "$DOMAIN" \
-    --key-file "$SSL_DIR/privkey.pem" \
-    --fullchain-file "$SSL_DIR/fullchain.pem" \
-    --reloadcmd "
+    ACME_CERT="/root/.acme.sh/${DOMAIN}_ecc"
+
+
+    if [[ -d "$ACME_CERT" ]]; then
+
+        info "Found existing acme.sh certificate."
+
+    else
+
+        info "Certificate not found. Issuing new certificate..."
+
+        acme.sh \
+            --issue \
+            --force \
+            -d "$DOMAIN" \
+            --dns dns_cf
+
+    fi
+
+
+    info "Installing certificate..."
+
+
+    acme.sh \
+        --install-cert \
+        -d "$DOMAIN" \
+        --key-file "$SSL_DIR/privkey.pem" \
+        --fullchain-file "$SSL_DIR/fullchain.pem" \
+        --reloadcmd "
 cd $BASE_DIR &&
-docker compose restart nginx
+docker compose restart nginx || true
 "
 
+fi
 
-ok "Certificate installed."
+
+ok "SSL ready."
 
 
 ################################################################################
@@ -247,39 +268,45 @@ EOF
 
 
 ################################################################################
-# RemnaNode
+# RemnaNode settings
 ################################################################################
 
-ask SECRET_KEY "Enter panel Secret Key: "
+if [[ -f "$COMPOSE_FILE" ]]; then
 
-[[ -n "$SECRET_KEY" ]] || fail "Secret Key empty."
+    ok "Existing docker-compose.yml detected."
 
+else
 
-ask ALLOW_IP "Enter IP allowed for port 2222: "
+    ask_secret SECRET_KEY "Enter panel Secret Key: "
 
-
-################################################################################
-# Firewall
-################################################################################
-
-info "Configuring UFW..."
-
-ufw --force enable
-
-ufw allow from "$ALLOW_IP" to any port "$NODE_PORT" proto tcp
+    [[ -n "$SECRET_KEY" ]] || fail "Secret Key empty."
 
 
-ok "Firewall configured."
+    ask ALLOW_IP "Enter IP allowed for port 2222: "
 
 
-################################################################################
-# Docker compose
-################################################################################
+    ################################################################################
+    # Firewall
+    ################################################################################
 
-info "Creating docker-compose.yml..."
+    info "Configuring UFW..."
+
+    ufw --force enable
+
+    ufw allow from "$ALLOW_IP" to any port "$NODE_PORT" proto tcp
 
 
-cat > "$COMPOSE_FILE" <<EOF
+    ok "Firewall configured."
+
+
+    ################################################################################
+    # Docker compose
+    ################################################################################
+
+    info "Creating docker-compose.yml..."
+
+
+    cat > "$COMPOSE_FILE" <<EOF
 services:
 
     nginx:
@@ -325,11 +352,13 @@ services:
 EOF
 
 
-ok "docker-compose.yml created."
+    ok "docker-compose.yml created."
+
+fi
 
 
 ################################################################################
-# Start stack
+# Start containers
 ################################################################################
 
 info "Starting RemnaNode stack..."
@@ -357,12 +386,8 @@ echo "TLS backend:"
 echo "127.0.0.1:$NGINX_PORT"
 
 echo
-echo "RemnaNode port:"
+echo "Node port:"
 echo "$NODE_PORT"
-
-echo
-echo "Allowed IP:"
-echo "$ALLOW_IP"
 
 echo
 echo "Directory:"
