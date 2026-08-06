@@ -312,7 +312,11 @@ services:
         network_mode: host
         volumes:
             - ./nginx/nginx.conf:/etc/nginx/conf.d/default.conf:ro
-
+        logging:
+            driver: json-file
+            options:
+                max-size: 100m
+                max-file: 5
 
     remnanode:
         container_name: remnanode
