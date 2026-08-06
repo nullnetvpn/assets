@@ -246,17 +246,9 @@ info "Creating nginx config..."
 cat > "$NGINX_CONFIG" <<EOF
 server {
 
-    listen 127.0.0.1:$NGINX_PORT ssl;
+    listen 127.0.0.1:$NGINX_PORT http2;
 
     server_name $DOMAIN;
-
-
-    ssl_certificate /etc/nginx/ssl/fullchain.pem;
-    ssl_certificate_key /etc/nginx/ssl/privkey.pem;
-
-
-    ssl_protocols TLSv1.2 TLSv1.3;
-
 
     location / {
         return 403;
