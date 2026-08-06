@@ -4,17 +4,19 @@ set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive
 
 ################################################################################
-# Config
+# Variables
 ################################################################################
 
-SSL_DIR="/opt/remnanode/ssl"
-COMPOSE_FILE="/opt/remnanode/docker-compose.yml"
-SERVICE_NAME="remnanode"
+BASE_DIR="/opt/remnanode"
+SSL_DIR="$BASE_DIR/ssl"
+COMPOSE_FILE="$BASE_DIR/docker-compose.yml"
 
-CF_CONFIG="/root/.remnanode_ssl.conf"
+CF_CONFIG="/root/.remnanode_cf.conf"
 
-NGINX_CONFIG="/etc/nginx/conf.d/remnanode-local.conf"
+NGINX_CONFIG="/etc/nginx/conf.d/remnanode.conf"
 NGINX_PORT="8000"
+
+NODE_PORT="2222"
 
 ################################################################################
 # Functions
@@ -49,13 +51,13 @@ ask_secret() {
 }
 
 ################################################################################
-# Root
+# Root check
 ################################################################################
 
-[[ $EUID -eq 0 ]] || fail "Run as root."
+[[ "$EUID" == "0" ]] || fail "Run script as root."
 
 ################################################################################
-# Install packages
+# Packages
 ################################################################################
 
 info "Installing dependencies..."
@@ -69,7 +71,23 @@ apt install -y \
     ca-certificates \
     nginx \
     python3 \
-    cron
+    ufw \
+    cron \
+    docker.io \
+    docker-compose-plugin
+
+systemctl enable docker
+systemctl start docker
+
+
+################################################################################
+# Directory
+################################################################################
+
+mkdir -p "$SSL_DIR"
+mkdir -p "$BASE_DIR"
+mkdir -p /var/log/remnanode
+
 
 ################################################################################
 # Install acme.sh
@@ -78,12 +96,15 @@ apt install -y \
 export PATH="/root/.acme.sh:$PATH"
 
 if ! command -v acme.sh >/dev/null 2>&1; then
+
     info "Installing acme.sh..."
 
     curl -fsSL https://get.acme.sh | sh
 
     export PATH="/root/.acme.sh:$PATH"
+
 fi
+
 
 ################################################################################
 # Domain
@@ -92,6 +113,7 @@ fi
 ask DOMAIN "Enter domain: "
 
 [[ -n "$DOMAIN" ]] || fail "Domain is empty."
+
 
 ################################################################################
 # ACME account
@@ -109,8 +131,9 @@ if ! acme.sh --list >/dev/null 2>&1; then
 
 fi
 
+
 ################################################################################
-# Cloudflare API Token
+# Cloudflare token
 ################################################################################
 
 if [[ -f "$CF_CONFIG" ]]; then
@@ -121,7 +144,7 @@ else
 
     ask_secret CF_Token "Enter Cloudflare API Token: "
 
-    [[ -n "$CF_Token" ]] || fail "Token is empty."
+    [[ -n "$CF_Token" ]] || fail "Cloudflare Token empty."
 
     cat > "$CF_CONFIG" <<EOF
 export CF_Token="$CF_Token"
@@ -131,17 +154,17 @@ EOF
 
 fi
 
+
 source "$CF_CONFIG"
 
 export CF_Token
+
 
 ################################################################################
 # Certificate
 ################################################################################
 
-mkdir -p "$SSL_DIR"
-
-info "Issuing certificate..."
+info "Requesting certificate for $DOMAIN..."
 
 acme.sh \
     --issue \
@@ -158,16 +181,17 @@ acme.sh \
     --fullchain-file "$SSL_DIR/fullchain.pem" \
     --reloadcmd "
 systemctl reload nginx
-docker compose -f $COMPOSE_FILE restart $SERVICE_NAME || true
 "
+
 
 ok "Certificate installed."
 
+
 ################################################################################
-# Local HTTPS nginx :8000
+# Nginx HTTPS local backend
 ################################################################################
 
-info "Creating local HTTPS server..."
+info "Creating nginx TLS backend..."
 
 cat > "$NGINX_CONFIG" <<EOF
 server {
@@ -184,6 +208,7 @@ server {
     location / {
         return 403;
     }
+
 }
 EOF
 
@@ -193,80 +218,109 @@ nginx -t
 systemctl enable nginx
 systemctl restart nginx
 
-ok "HTTPS backend started: 127.0.0.1:$NGINX_PORT"
+ok "Local HTTPS started on 127.0.0.1:$NGINX_PORT"
+
 
 ################################################################################
-# Docker compose volume
+# RemnaNode settings
 ################################################################################
 
-if [[ -f "$COMPOSE_FILE" ]]; then
+ask SECRET_KEY "Enter panel Secret Key: "
 
-    if ! grep -q "/opt/remnanode/ssl:/opt/remnanode/ssl:ro" "$COMPOSE_FILE"; then
+[[ -n "$SECRET_KEY" ]] || fail "Secret key empty."
 
-        info "Updating docker-compose.yml..."
 
-        cp "$COMPOSE_FILE" "$COMPOSE_FILE.backup"
+ask ALLOW_IP "Enter IP allowed for port 2222: "
 
-        python3 <<PY
-from pathlib import Path
-
-path = Path("$COMPOSE_FILE")
-data = path.read_text()
-
-volume = "      - /opt/remnanode/ssl:/opt/remnanode/ssl:ro"
-
-if volume not in data:
-
-    if "    volumes:" in data:
-        data = data.replace(
-            "    volumes:",
-            "    volumes:\n" + volume,
-            1
-        )
-    else:
-        data += "\n    volumes:\n" + volume + "\n"
-
-path.write_text(data)
-PY
-
-        ok "docker-compose.yml updated."
-
-    fi
-
-else
-
-    echo "Warning: docker-compose.yml not found."
-
-fi
 
 ################################################################################
-# Restart RemnaNode
+# UFW
 ################################################################################
 
-if [[ -f "$COMPOSE_FILE" ]]; then
+info "Configuring firewall..."
 
-    info "Starting RemnaNode..."
+ufw --force enable
 
-    docker compose \
-        -f "$COMPOSE_FILE" \
-        up -d
+ufw allow from "$ALLOW_IP" to any port "$NODE_PORT" proto tcp
 
-fi
+
+ok "Port $NODE_PORT opened for $ALLOW_IP"
+
 
 ################################################################################
-# Result
+# Docker compose
+################################################################################
+
+info "Creating docker-compose.yml"
+
+
+cat > "$COMPOSE_FILE" <<EOF
+services:
+    remnanode:
+        container_name: remnanode
+        hostname: remnanode
+        image: remnawave/node:latest
+        network_mode: host
+        restart: always
+        cap_add:
+            - NET_ADMIN
+        ulimits:
+            nofile:
+                soft: 1048576
+                hard: 1048576
+        environment:
+            - NODE_PORT=$NODE_PORT
+            - SECRET_KEY=$SECRET_KEY
+        volumes:
+            - /dev/shm:/dev/shm
+            - /var/log/remnanode:/var/log/remnanode
+            - /opt/remnanode/ssl:/opt/remnanode/ssl:ro
+        logging:
+            driver: json-file
+            options:
+                max-size: 100m
+                max-file: 5
+EOF
+
+
+ok "docker-compose.yml created"
+
+
+################################################################################
+# Start RemnaNode
+################################################################################
+
+info "Starting RemnaNode..."
+
+cd "$BASE_DIR"
+
+docker compose up -d
+
+
+################################################################################
+# Finish
 ################################################################################
 
 echo
-ok "Installation completed."
+ok "Installation completed!"
 echo
+
 echo "Domain:"
-echo "  https://$DOMAIN"
+echo "https://$DOMAIN"
+
 echo
-echo "Certificate:"
-echo "  $SSL_DIR/fullchain.pem"
-echo "  $SSL_DIR/privkey.pem"
+echo "SSL:"
+echo "$SSL_DIR/fullchain.pem"
+echo "$SSL_DIR/privkey.pem"
+
 echo
-echo "Local TLS backend:"
-echo "  127.0.0.1:$NGINX_PORT"
+echo "Local HTTPS:"
+echo "127.0.0.1:$NGINX_PORT"
+
 echo
+echo "RemnaNode port:"
+echo "$NODE_PORT"
+
+echo
+echo "Allowed IP:"
+echo "$ALLOW_IP"
