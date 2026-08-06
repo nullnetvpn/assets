@@ -2,6 +2,7 @@
 set -euo pipefail
 
 export DEBIAN_FRONTEND=noninteractive
+
 ################################################################################
 # Variables
 ################################################################################
@@ -39,24 +40,21 @@ fail() {
 ask() {
     local var="$1"
     local text="$2"
-
     read -rp "$text" "$var" </dev/tty
 }
 
 ask_secret() {
     local var="$1"
     local text="$2"
-
     read -rsp "$text" "$var" </dev/tty
     echo
 }
-
 
 ################################################################################
 # Root
 ################################################################################
 
-[[ "$EUID" == "0" ]] || fail "Run script as root."
+[[ "$EUID" == "0" ]] || fail "Run as root."
 
 
 ################################################################################
@@ -133,14 +131,14 @@ fi
 
 ask DOMAIN "Enter domain: "
 
-[[ -n "$DOMAIN" ]] || fail "Domain is empty."
+[[ -n "$DOMAIN" ]] || fail "Domain empty."
 
 
 ################################################################################
 # ACME account
 ################################################################################
 
-if ! acme.sh --list >/dev/null 2>&1; then
+if [[ ! -f "/root/.acme.sh/account.conf" ]]; then
 
     info "Registering ACME account..."
 
@@ -148,11 +146,15 @@ if ! acme.sh --list >/dev/null 2>&1; then
         --register-account \
         -m "noreply-$(date +%s)@example.com"
 
+else
+
+    ok "ACME account exists."
+
 fi
 
 
 ################################################################################
-# Cloudflare token
+# Cloudflare
 ################################################################################
 
 if [[ -f "$CF_CONFIG" ]]; then
@@ -187,26 +189,30 @@ export CF_Token
 info "Checking SSL certificates..."
 
 
-if [[ -f "$SSL_DIR/fullchain.pem" && -f "$SSL_DIR/privkey.pem" ]]; then
+if [[ \
+    -f "$SSL_DIR/fullchain.pem" &&
+    -f "$SSL_DIR/privkey.pem"
+]]; then
 
-    ok "Certificates already exist in $SSL_DIR"
-
+    ok "SSL certificates already exist."
 
 else
 
-    info "Certificates not found in $SSL_DIR"
+
+    ACME_DIR="/root/.acme.sh/${DOMAIN}_ecc"
 
 
-    ACME_CERT="/root/.acme.sh/${DOMAIN}_ecc"
+    if [[ \
+        -f "$ACME_DIR/${DOMAIN}.key" &&
+        -f "$ACME_DIR/fullchain.cer"
+    ]]; then
 
+        ok "Valid acme.sh certificate found."
 
-    if [[ -d "$ACME_CERT" ]]; then
-
-        info "Found existing acme.sh certificate."
 
     else
 
-        info "Certificate not found. Issuing new certificate..."
+        info "Certificate not found. Issuing..."
 
         acme.sh \
             --issue \
@@ -224,11 +230,7 @@ else
         --install-cert \
         -d "$DOMAIN" \
         --key-file "$SSL_DIR/privkey.pem" \
-        --fullchain-file "$SSL_DIR/fullchain.pem" \
-        --reloadcmd "
-cd $BASE_DIR &&
-docker compose restart nginx || true
-"
+        --fullchain-file "$SSL_DIR/fullchain.pem"
 
 fi
 
@@ -237,7 +239,7 @@ ok "SSL ready."
 
 
 ################################################################################
-# Nginx config
+# nginx
 ################################################################################
 
 info "Creating nginx config..."
@@ -250,6 +252,7 @@ server {
 
     server_name $DOMAIN;
 
+
     location / {
         return 403;
     }
@@ -259,14 +262,29 @@ EOF
 
 
 ################################################################################
-# RemnaNode settings
+# Docker compose
 ################################################################################
 
-if [[ -f "$COMPOSE_FILE" ]]; then
+CREATE_COMPOSE=false
 
-    ok "Existing docker-compose.yml detected."
 
-else
+if [[ ! -f "$COMPOSE_FILE" ]]; then
+
+    CREATE_COMPOSE=true
+
+elif ! grep -q "container_name: remnanode-nginx" "$COMPOSE_FILE"; then
+
+    info "Old compose detected."
+
+    cp "$COMPOSE_FILE" "$COMPOSE_FILE.backup.$(date +%s)"
+
+    CREATE_COMPOSE=true
+
+fi
+
+
+if [[ "$CREATE_COMPOSE" == true ]]; then
+
 
     ask_secret SECRET_KEY "Enter panel Secret Key: "
 
@@ -276,23 +294,10 @@ else
     ask ALLOW_IP "Enter IP allowed for port 2222: "
 
 
-    ################################################################################
-    # Firewall
-    ################################################################################
-
-    info "Configuring UFW..."
-
     ufw --force enable
 
     ufw allow from "$ALLOW_IP" to any port "$NODE_PORT" proto tcp
 
-
-    ok "Firewall configured."
-
-
-    ################################################################################
-    # Docker compose
-    ################################################################################
 
     info "Creating docker-compose.yml..."
 
@@ -307,7 +312,6 @@ services:
         network_mode: host
         volumes:
             - ./nginx/nginx.conf:/etc/nginx/conf.d/default.conf:ro
-            - ./ssl:/etc/nginx/ssl:ro
 
 
     remnanode:
@@ -345,18 +349,21 @@ EOF
 
     ok "docker-compose.yml created."
 
+else
+
+    ok "docker-compose.yml already configured."
+
 fi
 
 
 ################################################################################
-# Start containers
+# Start
 ################################################################################
 
-info "Starting Remnanode stack..."
+info "Starting containers..."
 
 
 cd "$BASE_DIR"
-
 
 docker compose up -d --remove-orphans
 
@@ -366,20 +373,16 @@ docker compose up -d --remove-orphans
 ################################################################################
 
 echo
-ok "Installation completed!"
-echo
-
-echo "Domain:"
-echo "https://$DOMAIN"
+ok "Installation complete"
 
 echo
-echo "TLS backend:"
+echo "Path:"
+echo "$BASE_DIR"
+
+echo
+echo "nginx fallback:"
 echo "127.0.0.1:$NGINX_PORT"
 
 echo
 echo "Node port:"
 echo "$NODE_PORT"
-
-echo
-echo "Directory:"
-echo "$BASE_DIR"
