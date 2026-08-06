@@ -3,6 +3,8 @@ set -euo pipefail
 
 export DEBIAN_FRONTEND=noninteractive
 
+ok "The script is initialized and starts working..."
+
 ################################################################################
 # Variables
 ################################################################################
